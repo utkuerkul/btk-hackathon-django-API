@@ -25,8 +25,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),  # Admin paneli
     path('api/', include(router.urls)),  # API yollarını buraya ekliyoruz
     path('user-suggestion/', UserActivitySuggestionView.as_view(), name='user-suggestion'),
-    path('user-and-suggestion-list/', UserActivitySuggestionListView.as_view(), name='user-suggestion-list'),
-    path('exam-results-suggestion/', ExamResultsSuggestionView.as_view(), name='exam-results-suggestion'),
+    path('api/exam-results-suggestions/', ExamResultsSuggestionView.as_view(), name='exam-results-suggestions'),
     path('api/yks-exam-results/', YKSExamResultViewSet.as_view({'post': 'create'}), name='yks-exam-results'),
     path('upload/', upload_page, name='upload_page')
 ]

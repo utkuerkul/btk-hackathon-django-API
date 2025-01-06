@@ -1,259 +1,174 @@
-from django.shortcuts import render
-from rest_framework import viewsets
-from .models import ExamModel,YKSExamResult, ResultModel, DailyReportModelTYT, DailyReportModelAYT, UserActivitySuggestion, UserModel
-from .serializers import ExamModelSerializer,YKSExamResultSerializer,ExamModelSerializer, ExamResultsRequestSerializer, ResultModelSerializer, DailyReportModelTYTSerializer, DailyReportModelAYTSerializer, UserModelSerializer
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from .serializers import RequestSerializer
-from django.http import JsonResponse
-import google.generativeai as genai 
-from rest_framework.decorators import action
-from rest_framework.parsers import MultiPartParser
-from tablib import Dataset
-from .models import YKSExamResult
-from .resources import YKSExamResultResource
-from rest_framework.parsers import MultiPartParser, FormParser
-import pandas as pd 
-
-class ResultModelViewSet(viewsets.ModelViewSet):
-    queryset = ResultModel.objects.all()
-    serializer_class = ResultModelSerializer
-
-class UserModelViewSet(viewsets.ModelViewSet):
-    queryset = UserModel.objects.all()
-    serializer_class = UserModelSerializer
-
-class ExamModelViewSet(viewsets.ModelViewSet):
-    queryset = ExamModel.objects.all()
-    serializer_class = ExamModelSerializer
-
-class DailyReportModelTYTViewSet(viewsets.ModelViewSet):
-    queryset = DailyReportModelTYT.objects.all()
-    serializer_class = DailyReportModelTYTSerializer
-
-class DailyReportModelAYTViewSet(viewsets.ModelViewSet):
-    queryset = DailyReportModelAYT.objects.all()
-    serializer_class = DailyReportModelAYTSerializer
-
-class YKSExamResultViewSet(viewsets.ModelViewSet):
-    queryset = YKSExamResult.objects.all()
-    serializer_class = YKSExamResultSerializer
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-genai.configure(api_key="AIzaSyBzz-mPuEHIEftIDogexuPLn5gy734ERgU")
-
-# Model yapılandırma
-generation_config = {
-    "temperature": 1,
-    "top_p": 0.95,
-    "top_k": 64,
-    "max_output_tokens": 5096,
-    "response_mime_type": "text/plain",
-}
-
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    generation_config=generation_config,
-)
-
-def call_gemini_api(prompt):
-    
-    response = model.generate_content(prompt)
-    return response
+from .utils import call_inference_api,create_prompt
+import os
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+import pandas as pd
+from django.conf import settings
+import re
 
 class UserActivitySuggestionView(APIView):
     def post(self, request):
-        serializer = RequestSerializer(data=request.data)
+        user_data = request.data
 
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        lesson_data = user_data.get("lessonData", [])
+        type_of_analysis = user_data.get("type", "daily")
+        uid = user_data.get("uid", "")
+        user_field = user_data.get("userField", "")
+        user_goal = user_data.get("userGoal", "")
 
-        user_data = serializer.validated_data
+        if not lesson_data:
+            return Response({"error": "lessonData is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Prompt oluşturma
         prompt = (
-    f"Kullanıcı Bilgileri:\n"
-    f"İsim: {user_data['name']}\n"
-    f"Soyisim: {user_data['surname']}\n"
-    f"Doğum Tarihi: {user_data['birth_date']}\n"
-    f"Bölüm: {user_data['study_field']}\n"
-    f"Günlük Ders Çalışma Süresi: {user_data['daily_study_hours']} saat\n"
-    f"Uzun Vadeli Hedef: {user_data['goals']}\n"
-    f"GPA (Not Ortalaması): {user_data['gpa']}\n\n"
+            f"Kullanıcı Bilgileri:\n"
+            f"UID: {uid}\n"
+            f"Alan: {user_field}\n"
+            f"Hedef: {user_goal}\n"
+            f"Analiz Türü: {type_of_analysis}\n\n"
+            f"Ders Performans Verileri:\n"
+        )
 
-    "Öğrencinin Başarı Hedefleri İçin Strateji Önerileri:\n"
-    "1. **Çalışma Planı ve Rutin:** Kullanıcının günlük çalışma süresi ve hedefi göz önünde bulundurularak, "
-    "verimli bir çalışma planı hazırlanmalı. Çalışma süresini optimum düzeyde kullanmasını sağlamalı.\n\n"
-    
-    "2. **TYT ve AYT Sınav Stratejileri:** Sınav hedeflerine göre, TYT'de hız kazanması, temel konuları gözden "
-    "geçirmesi ve düzenli soru çözme pratiği yapması tavsiye edilir. AYT için ise ilgili alanlarda ileri seviye "
-    "sorular çözerek zayıf konulara odaklanması önerilir.\n\n"
-    
-    "3. **Motivasyonun Güçlendirilmesi:** Kullanıcının belirttiği uzun vadeli hedeflerin yol haritasını "
-    "oluşturacak motivasyon kaynakları sunulmalı. Hedef odaklılık sağlayacak haftalık kontrol noktaları ve "
-    "hedef takip planları önerilmelidir.\n\n"
-    
-    "4. **Kendini Değerlendirme ve Gelişim:** Mevcut GPA bilgisi dikkate alınarak, akademik gelişimini destekleyecek "
-    "çalışma alışkanlıkları ve kaynak önerileri sunulmalı. Öğrenilen bilgilerin kalıcılığını sağlamak için tekrar "
-    "yöntemleri önerilmelidir.\n\n"
-    
-    "Bu adımları düşünerek öğrenciye TYT ve AYT başarılarını destekleyecek, uzun vadeli hedeflerine ulaşmasına yardımcı "
-    "olacak kişisel öneriler sunulacaktır. Bu adımları tek tek yazmayarak sadece Öneri çıktısı verilecek. "
-)
+        for lesson in lesson_data:
+            lesson_name = lesson.get("lesson", "")
+            true_answers = lesson.get("trueAnswers", 0)
+            false_answers = lesson.get("falseAnswers", 0)
+            clear_answers = lesson.get("clearAnswers", 0.0)
+            total_answer = lesson.get("totalAnswer", 0)
+            date = lesson.get("date", "")
 
-
-        try:
-            gemini_response = call_gemini_api(prompt)
-            suggestion_text = gemini_response.text
-
-            user_suggestion = UserActivitySuggestion.objects.create(
-                uid=user_data["uid"],
-                name=user_data['name'],
-                surname=user_data['surname'],
-                birth_date=user_data['birth_date'],
-                study_field=user_data['study_field'],
-                daily_study_hours=user_data['daily_study_hours'],
-                goals=user_data['goals'],
-                gpa=user_data.get('gpa'),  # GPA boş olabilir, get kullanarak alınır
-                suggestion=suggestion_text
+            prompt += (
+                f"Ders: {lesson_name}, Tarih: {date}, Doğru: {true_answers}, Yanlış: {false_answers}, Net: {clear_answers}, Toplam: {total_answer}\n"
             )
 
+        prompt += (
+            "\nBu verilere dayanarak kullanıcı için öneriler oluştur:\n"
+            "- Performansını artırmak için hangi konulara odaklanması gerektiğini belirt.\n"
+            "- Hedefine ulaşmak için günlük/haftalık/aylık çalışma stratejilerini sun.\n"
+        )
+
+        try:
+            suggestion_text = call_inference_api(prompt)
             response_data = {
-                "uid": user_suggestion.uid,
-                "name": user_suggestion.name,
-                "surname": user_suggestion.surname,
-                "birth_date": user_suggestion.birth_date,
-                "study_field": user_suggestion.study_field,
-                "daily_study_hours": user_suggestion.daily_study_hours,
-                "goals": user_suggestion.goals,
-                "gpa": user_suggestion.gpa,
-                "suggestion": user_suggestion.suggestion
+                "uid": uid,
+                "userField": user_field,
+                "userGoal": user_goal,
+                "type": type_of_analysis,
+                "suggestion": suggestion_text
             }
-
-            return Response(response_data, status=status.HTTP_201_CREATED)
-
-        except ValueError as ve:
-            return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
-
+            return Response(response_data, status=status.HTTP_200_OK)
         except Exception as e:
-            return Response({"error": "Bir hata oluştu: " + str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"error": f"Bir hata oluştu: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-class UserActivitySuggestionListView(APIView):
-    def get(self, request):
-        suggestions = UserActivitySuggestion.objects.all()
-        data = [
-            {
-                "uid": suggestion.uid,
-                "name": suggestion.name,
-                "surname": suggestion.surname,
-                "birth_date": suggestion.birth_date,
-                "study_field": suggestion.study_field,
-                "daily_study_hours": suggestion.daily_study_hours,
-                "goals": suggestion.goals,
-                "gpa": suggestion.gpa,
-                "suggestion": suggestion.suggestion
-            }
-            for suggestion in suggestions
-        ]
-        return Response(data, status=status.HTTP_200_OK)
-    
+
+
 class ExamResultsSuggestionView(APIView):
-    def post(self, request):
-        serializer = ExamResultsRequestSerializer(data=request.data)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
-        # Serializer doğrulama
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Excel dosyasının tam yolunu belirleyin
+        excel_file_path = os.path.join(
+            settings.BASE_DIR,
+            r"C:\Users\utku-\Desktop\KAGGLE\BTK Hackaton Django\hackhaton_btk\api\yks_excel_updated.xlsx"
+        )
 
-        exam_results_data = serializer.validated_data.get('exam_results')
-        user_id = serializer.validated_data.get('user_id')
-
-        # Kullanıcı hedefini alma
         try:
-            user_activity = UserActivitySuggestion.objects.get(uid=user_id)
-            user_goal = user_activity.goals  # Kullanıcının hedefi
-        except UserActivitySuggestion.DoesNotExist:
-            return Response({"error": "Kullanıcı bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
+            df_original = pd.read_excel(excel_file_path)
 
-        examsuggestions = []
+            # Debug: Sütunları inceleyin
+            print(">>> [INIT] Excel Columns:", df_original.columns.tolist())
+            print(">>> [INIT] Excel Shape:", df_original.shape)
 
-        # Her ders için öneri oluşturma
-        for result in exam_results_data:
-            lesson_name = result.get('lessons')
-            true_answers = result.get('true_answers', 0)
-            false_answers = result.get('false_answers', 0)
-            clear_answers = result.get('clear_answers', 0.0)
-            exam_date = result.get('date')
-            exam_type = result.get('exam_type')
-
-            prompt = (
-                f"{exam_date} tarihinde yapılan {exam_type} sınavında {lesson_name} dersinden {true_answers} doğru ve "
-                f"{false_answers} yanlış cevap verildi. Net sayısı: {clear_answers}. "
-                f"Kullanıcının hedefi: {user_goal} bölümüne yerleşmek. "
-
-                f"Geçtiğimiz yıllardaki {exam_type} sınav sonuçlarına göre, {lesson_name} dersinde "
-                f"{user_goal} bölümünü kazanan adayların net aralıkları, en düşük ve en yüksek net değerleri hakkında bilgi ver. "
-                f"Kullanıcının mevcut performansını bu verilerle kıyaslayarak, hedeflenen net sayısına ulaşmak için hangi "
-                f"konulara ve soru tiplerine odaklanması gerektiğini kısa önerilerle açıkla. Ayrıca, bu bölümü kazanmak için "
-                f"geçmiş yıllarda ortalama kaç net doğrusu olan adayların başarı sağladığını belirt ve bu bilgilere dayanarak kullanıcıya "
-                f"önerilerde bulun."
+            # Normalleştirme (strip + lower) - Sütun düzeyinde
+            df_original["Üniversite Adı"] = (
+                df_original["Üniversite Adı"].astype(str).str.strip().str.lower()
+            )
+            df_original["Program Adı"] = (
+                df_original["Program Adı"].astype(str).str.strip().str.lower()
             )
 
-            # API çağrısı
-            try:
-                gemini_response = call_gemini_api(prompt)
-                suggestion_text = gemini_response.text.strip()  # Boşlukları temizle
+            # Artık self.df normalleştirilmiş bir DataFrame
+            self.df = df_original
 
-                examsuggestions.append({
-                    "lesson": lesson_name,
-                    "exam_date": exam_date,
-                    "exam_type": exam_type,
-                    "goal": user_goal,
-                    "suggestion": suggestion_text
-                })
-
-            except Exception as e:
-                examsuggestions.append({
-                    "lesson": lesson_name,
-                    "exam_date": exam_date,
-                    "exam_type": exam_type,
-                    "goal": user_goal,
-                    "suggestion": f"Hata: {str(e)}"
-                })
-
-        # Sonuçları JSON formatında döndür
-        return Response({"examsuggestion": examsuggestions}, status=status.HTTP_200_OK)
-    
-
-class YKSExamResultViewSet(viewsets.ModelViewSet):
-    queryset = YKSExamResult.objects.all()
-    serializer_class = YKSExamResultSerializer
-    parser_classes = (MultiPartParser, FormParser)  # Dosya yüklemek için gerekli parser'lar
-
-    def create(self, request, *args, **kwargs):
-        file = request.FILES.get('file') 
-        if not file:
-            return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Dosyayı pandas ile oku
-        try:
-            data = pd.read_excel(file)
-            # Satırları YKSExamResult modeline ekle
-            for _, row in data.iterrows():
-                YKSExamResult.objects.create(
-                    program_kodu=row['Program Kodu'],
-                    universite_turu=row['Üniversites Türü'],
-                    universite_adi=row['Üniversite Adı'],
-                    # Diğer alanları buraya ekleyin
-                )
-            return Response({"status": "File uploaded and data saved"}, status=status.HTTP_201_CREATED)
-
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"Excel dosyası bulunamadı: {str(e)}")
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        
-def upload_page(request):
-    return render(request, 'upload.html')
+            raise RuntimeError(f"Excel yüklenirken bir hata oluştu: {str(e)}")
+
+    def post(self, request):
+        """
+        Kullanıcıdan gelen veriler doğrultusunda:
+        1) userGoal ve lessonName normalleştirilir,
+        2) Excel üzerinden ilgili satır bulunur,
+        3) Performans analizi yapılır,
+        4) create_prompt ile prompt oluşturulur,
+        5) call_inference_api ile LLM'e istek atılır.
+        """
+
+        # 1) Request'ten verileri al
+        user_data = request.data
+
+        user_goal = user_data.get("userGoal", "")
+        lesson_name = user_data.get("lessonName", "")
+        lesson_data = user_data.get("lessonData", [])
+
+        # 2) Gerekli alanların kontrolü
+        if not user_goal or not lesson_name or not lesson_data:
+            return Response(
+                {
+                    "error": "Gerekli alanlardan biri eksik: 'userGoal', 'lessonName', 'lessonData'."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 3) Kullanıcı girdilerini normalleştir (küçült + boşluklar + parantez temizliği)
+        user_goal_norm = (user_goal or "").lower().strip()
+        user_goal_norm = user_goal_norm.replace("(", "").replace(")", "")
+
+        lesson_name_norm = (lesson_name or "").lower().strip()
+        lesson_name_norm = lesson_name_norm.replace("(", "").replace(")", "")
+
+        # 4) Excel filtreleme (kısmi eşleşme: str.contains)
+        target_row = self.df[
+            (self.df["Üniversite Adı"].str.contains(user_goal_norm, na=False, regex=False)) &
+            (self.df["Program Adı"].str.contains(lesson_name_norm, na=False, regex=False))
+        ]
+
+        if target_row.empty:
+            return Response(
+                {
+                    "error": f"Hedef üniversite veya bölüm bulunamadı: {user_goal} - {lesson_name}"
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # 5) Tek satır seçip sözlüğe dönüştür (ilk eşleşen satır)
+        target_row_data = target_row.iloc[0].to_dict()
+
+        # 6) Performans analizi
+        try:
+            total_true = sum(item["trueAnswers"] for item in lesson_data)
+            total_answers = sum(item["totalAnswer"] for item in lesson_data)
+            accuracy = (total_true / total_answers) * 100 if total_answers > 0 else 0
+        except Exception as e:
+            return Response(
+                {"error": f"Performans analizi sırasında hata: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # 7) Prompt oluşturma ve LLM çağrısı
+        try:
+            prompt = create_prompt(user_data, target_row_data, accuracy)
+            suggestion_text = call_inference_api(prompt)
+        except Exception as e:
+            return Response(
+                {"error": f"LLM çağrısı sırasında hata: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # 8) Başarılı yanıt
+        return Response({"suggestion": suggestion_text}, status=status.HTTP_200_OK)
